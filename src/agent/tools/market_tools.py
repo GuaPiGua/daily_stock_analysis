@@ -9,15 +9,9 @@ Tools:
 
 import logging
 
-from src.agent.tools.registry import ToolParameter, ToolDefinition, ToolPolicy
+from src.agent.tools.registry import ToolParameter, ToolDefinition
 
 logger = logging.getLogger(__name__)
-
-_MARKET_READ_POLICY = ToolPolicy.declared(
-    read_only=True,
-    side_effects=["network_read"],
-    permissions=["market_data:read"],
-)
 
 
 def _get_fetcher_manager():
@@ -61,7 +55,6 @@ get_market_indices_tool = ToolDefinition(
     ],
     handler=_handle_get_market_indices,
     category="market",
-    policy=_MARKET_READ_POLICY,
 )
 
 
@@ -106,7 +99,6 @@ get_sector_rankings_tool = ToolDefinition(
     ],
     handler=_handle_get_sector_rankings,
     category="market",
-    policy=_MARKET_READ_POLICY,
 )
 
 

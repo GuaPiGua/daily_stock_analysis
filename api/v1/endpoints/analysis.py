@@ -90,10 +90,8 @@ from src.utils.data_processing import (
     parse_json_field,
     extract_fundamental_detail_fields,
     extract_board_detail_fields,
-    extract_market_structure_detail_field,
     extract_realtime_detail_fields,
 )
-from src.utils.market_review_region import normalize_market_review_region_lenient
 
 logger = logging.getLogger(__name__)
 
@@ -133,11 +131,11 @@ def _with_request_report_language(config: Config, report_language: Optional[str]
 
 def _run_market_review_background(
     send_notification: bool,
-    effective_region: str,
+    override_region: Optional[str] = None,
     lock_token: Optional[_MarketReviewExecutionLock] = None,
     config: Optional[Config] = None,
     query_id: Optional[str] = None,
-) -> Dict[str, Any]:
+) -> None:
     """Run market review after the API response has been accepted."""
     from src.core.market_review import run_market_review
 
@@ -150,7 +148,7 @@ def _run_market_review_background(
             "search_service": search_service,
             "config": runtime_config,
             "send_notification": send_notification,
-            "override_region": effective_region,
+            "override_region": override_region,
             "return_structured": True,
             "trigger_source": "api",
         }
@@ -160,7 +158,7 @@ def _run_market_review_background(
             "[MarketReview] component=market_review action=background_start "
             "trigger_source=api task_id=%s region=%s",
             query_id or "-",
-            effective_region,
+            override_region or getattr(runtime_config, "market_review_region", "cn") or "cn",
         )
         report = run_market_review(**review_kwargs)
         if not report:
@@ -169,9 +167,8 @@ def _run_market_review_background(
             return {
                 "result": report.report,
                 "market_review_payload": getattr(report, "market_review_payload", None),
-                "region": effective_region,
             }
-        return {"result": report, "region": effective_region}
+        return {"result": report}
     finally:
         _release_market_review_lock(lock_token)
 
@@ -483,7 +480,7 @@ def _handle_sync_analysis(
 
         # 构建报告结构
         report_data = result.get("report", {})
-        context_snapshot, fundamental_snapshot, raw_result_snapshot = _load_sync_fundamental_sources(
+        context_snapshot, fundamental_snapshot = _load_sync_fundamental_sources(
             query_id=query_id,
             stock_code=result.get("stock_code", stock_code),
         )
@@ -494,7 +491,6 @@ def _handle_sync_analysis(
             result.get("stock_name"),
             context_snapshot=context_snapshot,
             fallback_fundamental_payload=fundamental_snapshot,
-            fallback_raw_result_payload=raw_result_snapshot or result,
         )
 
         return AnalysisResultResponse(
@@ -537,9 +533,9 @@ def trigger_market_review(
     """Trigger market review from Web/API without blocking the request."""
     request = request or MarketReviewRequest()
 
-    runtime_config = _with_request_report_language(config, request.report_language)
-    effective_region = request.region or (
-        normalize_market_review_region_lenient(runtime_config.market_review_region) or "cn"
+    runtime_config = _with_request_report_language(
+        config,
+        getattr(request, "report_language", None),
     )
 
     lock_token = _try_acquire_market_review_lock(runtime_config)
@@ -552,13 +548,13 @@ def trigger_market_review(
             "[MarketReview] component=market_review action=submit trigger_source=api "
             "task_id=%s region=%s send_notification=%s",
             task_id,
-            effective_region,
+            getattr(runtime_config, "market_review_region", "cn") or "cn",
             request.send_notification,
         )
         task = get_task_queue().submit_background_task(
             lambda: _run_market_review_background(
                 request.send_notification,
-                effective_region=effective_region,
+                override_region=None,
                 lock_token=lock_token,
                 config=runtime_config,
                 query_id=task_id,
@@ -567,7 +563,6 @@ def trigger_market_review(
             stock_name="大盘复盘",
             message="大盘复盘任务已提交",
             task_id=task_id,
-            region=effective_region,
         )
     except Exception:
         _release_market_review_lock(lock_token)
@@ -577,7 +572,6 @@ def trigger_market_review(
         status="accepted",
         message="大盘复盘任务已提交，完成后会保存报告并按配置推送通知",
         send_notification=request.send_notification,
-        region=effective_region,
         task_id=task.task_id,
         trace_id=_get_task_trace_id(task),
     )
@@ -645,7 +639,6 @@ def get_task_list(
             selection_source=t.selection_source,
             analysis_phase=t.analysis_phase,
             skills=getattr(t, "skills", None),
-            region=t.region,
         )
         for t in all_tasks
     ]
@@ -965,23 +958,11 @@ def _build_task_analysis_result(task: Any) -> AnalysisResultResponse:
     report_enriched = False
 
     if isinstance(report_data, dict) and stock_code and query_id:
-        context_snapshot, fundamental_snapshot, raw_result_snapshot = _load_sync_fundamental_sources(
+        context_snapshot, fundamental_snapshot = _load_sync_fundamental_sources(
             query_id=query_id,
             stock_code=stock_code,
         )
-        report_task_details = report_data.get("details")
-        report_task_raw_result = (
-            report_task_details.get("raw_result")
-            if isinstance(report_task_details, dict)
-            else None
-        )
-        should_rebuild_report = (
-            context_snapshot is not None
-            or fundamental_snapshot is not None
-            or raw_result_snapshot is not None
-            or report_task_raw_result is not None
-        )
-        if should_rebuild_report:
+        if context_snapshot is not None or fundamental_snapshot is not None:
             try:
                 report = _build_analysis_report(
                     _prepare_report_for_task_enrichment(
@@ -993,7 +974,6 @@ def _build_task_analysis_result(task: Any) -> AnalysisResultResponse:
                     payload.get("stock_name") or getattr(task, "stock_name", None),
                     context_snapshot=context_snapshot,
                     fallback_fundamental_payload=fundamental_snapshot,
-                    fallback_raw_result_payload=raw_result_snapshot or payload,
                 )
                 payload["report"] = report.model_dump()
                 report_enriched = True
@@ -1081,7 +1061,6 @@ def get_analysis_status(task_id: str) -> TaskStatus:
             result=result,
             market_review_report=market_review_report,
             market_review_payload=market_review_payload,
-            region=task.region,
             error=task.error,
             stock_name=task.stock_name,
             original_query=task.original_query,
@@ -1103,18 +1082,10 @@ def get_analysis_status(task_id: str) -> TaskStatus:
                 market_review_report = None
                 context_snapshot = parse_json_field(getattr(record, "context_snapshot", None))
                 market_review_payload = None
-                region = None
                 if isinstance(context_snapshot, dict):
-                    raw_region = context_snapshot.get("market_review_region")
-                    if isinstance(raw_region, str) and raw_region.strip():
-                        region = raw_region.strip()
                     payload = context_snapshot.get("market_review_payload")
                     if isinstance(payload, dict):
                         market_review_payload = payload
-                        if region is None:
-                            payload_region = payload.get("region")
-                            if isinstance(payload_region, str) and payload_region.strip():
-                                region = payload_region.strip()
                 if isinstance(raw_result, dict):
                     report_text = raw_result.get("raw_response") or raw_result.get("market_review_report")
                     if isinstance(report_text, str) and report_text.strip():
@@ -1130,7 +1101,6 @@ def get_analysis_status(task_id: str) -> TaskStatus:
                     result=None,
                     market_review_report=market_review_report,
                     market_review_payload=market_review_payload,
-                    region=region,
                     error=None,
                     stock_name=record.name,
                 )
@@ -1169,23 +1139,13 @@ def get_analysis_status(task_id: str) -> TaskStatus:
                 context_snapshot=context_snapshot,
                 fallback_fundamental_payload=fallback_fundamental,
             )
-            market_structure = extract_market_structure_detail_field(
-                context_snapshot,
-                raw_result,
-            )
             has_board_details = (
                 bool(extracted_boards.get("belong_boards"))
                 or extracted_boards.get("sector_rankings") is not None
                 or extracted_boards.get("concept_rankings") is not None
             )
             details = None
-            if (
-                any(extracted_fundamental.values())
-                or has_board_details
-                or market_structure is not None
-                or context_snapshot is not None
-                or analysis_context_pack_overview is not None
-            ):
+            if any(extracted_fundamental.values()) or has_board_details or context_snapshot is not None or analysis_context_pack_overview is not None:
                 details = ReportDetails(
                     news_content=getattr(record, "news_content", None),
                     raw_result=raw_result,
@@ -1196,7 +1156,6 @@ def get_analysis_status(task_id: str) -> TaskStatus:
                     belong_boards=extracted_boards.get("belong_boards"),
                     sector_rankings=extracted_boards.get("sector_rankings"),
                     concept_rankings=extracted_boards.get("concept_rankings"),
-                    market_structure=market_structure,
                 )
 
             raw_dict = raw_result if isinstance(raw_result, dict) else {}
@@ -1280,9 +1239,9 @@ def get_analysis_status(task_id: str) -> TaskStatus:
 def _load_sync_fundamental_sources(
     query_id: str,
     stock_code: str,
-) -> tuple[Optional[Any], Optional[Dict[str, Any]], Optional[Any]]:
+) -> tuple[Optional[Any], Optional[Dict[str, Any]]]:
     """
-    Load report enrichment payloads for sync analyze response.
+    Load context_snapshot and fallback fundamental snapshot for sync analyze response.
     """
     try:
         from src.storage import DatabaseManager
@@ -1290,17 +1249,14 @@ def _load_sync_fundamental_sources(
         db = DatabaseManager.get_instance()
         records = db.get_analysis_history(query_id=query_id, code=stock_code, limit=1)
         context_snapshot = None
-        raw_result_snapshot = None
         if records:
-            latest_record = records[0]
-            context_snapshot = parse_json_field(getattr(latest_record, "context_snapshot", None))
-            raw_result_snapshot = parse_json_field(getattr(latest_record, "raw_result", None))
+            context_snapshot = parse_json_field(getattr(records[0], "context_snapshot", None))
 
         fallback_fundamental = db.get_latest_fundamental_snapshot(
             query_id=query_id,
             code=stock_code,
         )
-        return context_snapshot, fallback_fundamental, raw_result_snapshot
+        return context_snapshot, fallback_fundamental
     except Exception as e:
         logger.debug(
             "load sync fundamental sources failed (fail-open): query_id=%s stock_code=%s err=%s",
@@ -1308,7 +1264,7 @@ def _load_sync_fundamental_sources(
             stock_code,
             e,
         )
-        return None, None, None
+        return None, None
 
 
 def _stringify_report_strategy_value(value: Any) -> Optional[str]:
@@ -1326,7 +1282,6 @@ def _build_analysis_report(
         stock_name: Optional[str] = None,
         context_snapshot: Optional[Any] = None,
         fallback_fundamental_payload: Optional[Dict[str, Any]] = None,
-        fallback_raw_result_payload: Optional[Any] = None,
 ) -> AnalysisReport:
     """
     构建符合 API 规范的分析报告
@@ -1338,7 +1293,6 @@ def _build_analysis_report(
         stock_name: 股票名称
         context_snapshot: 上下文快照（可选）
         fallback_fundamental_payload: 基本面快照 payload（可选）
-        fallback_raw_result_payload: 原始分析结果 payload（可选）
         
     Returns:
         AnalysisReport: 结构化的分析报告
@@ -1388,31 +1342,7 @@ def _build_analysis_report(
         market_phase_summary=market_phase_summary,
     )
 
-    def _looks_like_raw_result_payload(candidate: Any) -> bool:
-        return (
-            isinstance(candidate, dict)
-            and (
-                "analysis_summary" in candidate
-                or "operation_advice" in candidate
-                or "trend_prediction" in candidate
-                or "sentiment_score" in candidate
-                or "market_structure_context" in candidate
-                or "model_used" in candidate
-                or "dashboard" in candidate
-                or "action" in candidate
-            )
-        )
-
-    raw_result_data = details_data.get("raw_result")
-    if not isinstance(raw_result_data, dict):
-        raw_result_data = {}
-        if isinstance(fallback_raw_result_payload, dict):
-            if isinstance(fallback_raw_result_payload.get("raw_result"), dict):
-                raw_result_data = fallback_raw_result_payload["raw_result"]
-            elif _looks_like_raw_result_payload(fallback_raw_result_payload):
-                raw_result_data = fallback_raw_result_payload
-        if not raw_result_data and isinstance(details_data, dict):
-            raw_result_data = details_data
+    raw_result_data = details_data.get("raw_result") if isinstance(details_data.get("raw_result"), dict) else {}
     action_fields = build_action_fields(
         operation_advice=(
             raw_result_data.get("operation_advice")
@@ -1458,16 +1388,6 @@ def _build_analysis_report(
         context_snapshot=context_snapshot,
         fallback_fundamental_payload=fallback_fundamental_payload,
     )
-    market_structure = None
-    for raw_candidate in (fallback_raw_result_payload, raw_result_data, details_data):
-        if raw_candidate is None:
-            continue
-        market_structure = extract_market_structure_detail_field(
-            context_snapshot,
-            raw_candidate,
-        )
-        if market_structure is not None:
-            break
     analysis_context_pack_overview = extract_analysis_context_pack_overview(context_snapshot)
     api_context_snapshot = sanitize_context_snapshot_for_api(context_snapshot)
     details = None
@@ -1476,17 +1396,10 @@ def _build_analysis_report(
         or extracted_boards.get("sector_rankings") is not None
         or extracted_boards.get("concept_rankings") is not None
     )
-    if (
-        details_data
-        or any(extracted_fundamental.values())
-        or has_board_details
-        or market_structure is not None
-        or context_snapshot is not None
-        or analysis_context_pack_overview is not None
-    ):
+    if details_data or any(extracted_fundamental.values()) or has_board_details or context_snapshot is not None or analysis_context_pack_overview is not None:
         details = ReportDetails(
             news_content=details_data.get("news_summary") or details_data.get("news_content"),
-            raw_result=raw_result_data,
+            raw_result=details_data,
             context_snapshot=api_context_snapshot,
             analysis_context_pack_overview=analysis_context_pack_overview,
             financial_report=extracted_fundamental.get("financial_report"),
@@ -1494,7 +1407,6 @@ def _build_analysis_report(
             belong_boards=extracted_boards.get("belong_boards"),
             sector_rankings=extracted_boards.get("sector_rankings"),
             concept_rankings=extracted_boards.get("concept_rankings"),
-            market_structure=market_structure,
         )
 
     return AnalysisReport(

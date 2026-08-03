@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
 from sqlalchemy import and_, desc, func, select
@@ -15,15 +14,6 @@ from src.storage import (
     DecisionSignalRecord,
     utc_naive_now,
 )
-
-
-@dataclass(frozen=True)
-class OutcomeStatsRow:
-    """Outcome row plus the live signal fields required by profile calibration."""
-
-    outcome: DecisionSignalOutcomeRecord
-    decision_profile: Optional[str]
-    metadata_json: Optional[str]
 
 
 class DecisionSignalOutcomeRepository:
@@ -181,7 +171,7 @@ class DecisionSignalOutcomeRepository:
         engine_version: str,
         horizons: Optional[List[str]] = None,
         statuses: Optional[List[str]] = None,
-    ) -> List[OutcomeStatsRow]:
+    ) -> List[DecisionSignalOutcomeRecord]:
         conditions = [DecisionSignalOutcomeRecord.engine_version == engine_version]
         if horizons:
             conditions.append(DecisionSignalOutcomeRecord.horizon.in_(horizons))
@@ -189,22 +179,11 @@ class DecisionSignalOutcomeRepository:
             conditions.append(DecisionSignalRecord.status.in_(statuses))
         with self.db.get_session() as session:
             rows = session.execute(
-                select(
-                    DecisionSignalOutcomeRecord,
-                    DecisionSignalRecord.decision_profile,
-                    DecisionSignalRecord.metadata_json,
-                )
+                select(DecisionSignalOutcomeRecord)
                 .join(DecisionSignalRecord, DecisionSignalRecord.id == DecisionSignalOutcomeRecord.signal_id)
                 .where(and_(*conditions))
-            ).all()
-            return [
-                OutcomeStatsRow(
-                    outcome=outcome,
-                    decision_profile=decision_profile,
-                    metadata_json=metadata_json,
-                )
-                for outcome, decision_profile, metadata_json in rows
-            ]
+            ).scalars().all()
+            return list(rows)
 
     def get_feedback(self, *, signal_id: int) -> Optional[DecisionSignalFeedbackRecord]:
         with self.db.get_session() as session:

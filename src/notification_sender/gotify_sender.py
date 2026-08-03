@@ -11,7 +11,6 @@ from urllib.parse import urlparse, urlunparse
 import requests
 
 from src.config import Config
-from src.formatters import strip_hidden_markdown_metadata
 
 
 logger = logging.getLogger(__name__)
@@ -78,7 +77,6 @@ class GotifySender:
         if title is None:
             date_str = datetime.now().strftime("%Y-%m-%d")
             title = f"📈 股票分析报告 - {date_str}"
-        sanitized_content = strip_hidden_markdown_metadata(content).strip()
 
         headers = {
             "Content-Type": "application/json; charset=utf-8",
@@ -87,7 +85,7 @@ class GotifySender:
         }
         payload = {
             "title": title,
-            "message": sanitized_content,
+            "message": content,
             "extras": {
                 "client::display": {
                     "contentType": "text/markdown",

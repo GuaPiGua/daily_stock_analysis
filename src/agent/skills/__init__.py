@@ -31,10 +31,6 @@ __all__ = [
     "SkillAgent",
     "SkillRouter",
     "SkillAggregator",
-    "DeliberationMediator",
-    "LLMDeliberationMediator",
-    "StrategySelfReviewMediator",
-    "MultiRoundDeliberationMediator",
     "DEFAULT_ACTIVE_SKILL_IDS",
     "DEFAULT_ROUTER_SKILL_IDS",
     "PRIMARY_DEFAULT_SKILL_ID",
@@ -63,20 +59,4 @@ def __getattr__(name):
         from src.agent.skills.aggregator import SkillAggregator
 
         return SkillAggregator
-    if name == "DeliberationMediator":
-        from src.agent.skills.deliberation import DeliberationMediator
-
-        return DeliberationMediator
-    if name == "LLMDeliberationMediator":
-        from src.agent.skills.deliberation import LLMDeliberationMediator
-
-        return LLMDeliberationMediator
-    if name == "StrategySelfReviewMediator":
-        from src.agent.skills.deliberation import StrategySelfReviewMediator
-
-        return StrategySelfReviewMediator
-    if name == "MultiRoundDeliberationMediator":
-        from src.agent.skills.deliberation import MultiRoundDeliberationMediator
-
-        return MultiRoundDeliberationMediator
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

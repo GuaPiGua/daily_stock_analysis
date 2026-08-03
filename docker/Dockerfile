@@ -8,14 +8,12 @@
 FROM node:20-slim AS web-builder
 
 WORKDIR /app/apps/dsa-web
-ARG DSA_WEB_VERSION=0.0.0
-ARG DSA_WEB_REVISION=unknown
 
 COPY apps/dsa-web/package.json apps/dsa-web/package-lock.json ./
 RUN --mount=type=cache,target=/root/.npm npm ci
 
 COPY apps/dsa-web/ ./
-RUN DSA_WEB_VERSION="${DSA_WEB_VERSION}" DSA_WEB_REVISION="${DSA_WEB_REVISION}" npm run build
+RUN npm run build
 
 # Pin to bookworm: wkhtmltopdf was removed from Debian testing (2025)
 FROM python:3.11-slim-bookworm
@@ -31,6 +29,7 @@ RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     curl \
+    git \
     gosu \
     wkhtmltopdf \
     fontconfig \
@@ -59,10 +58,8 @@ COPY strategies/ ./strategies/
 COPY --from=web-builder /app/static ./static/
 COPY docker/entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 
-# Verify globally bundled runtime dependencies without leaving SDK logs in the image.
-RUN mkdir -p /tmp/futu-sdk-smoke-home && \
-    HOME=/tmp/futu-sdk-smoke-home python -c "import src.services.screening.pipeline; import futu" && \
-    rm -rf /tmp/futu-sdk-smoke-home
+# Verify the bundled AlphaSift adapter from requirements.
+RUN python -c "import alphasift.dsa_adapter"
 
 # 确保数据目录存在并授权给 non-root 用户
 RUN mkdir -p /app/data /app/logs /app/reports && \

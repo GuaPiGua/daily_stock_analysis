@@ -5,6 +5,8 @@ from pathlib import Path
 
 import yaml
 
+from src.config import DEFAULT_ALPHASIFT_INSTALL_SPEC
+
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -24,14 +26,15 @@ def test_dockerfile_uses_entrypoint_to_drop_privileges() -> None:
     assert "USER dsa" not in dockerfile
 
 
-def test_dockerfile_bundles_builtin_screening_engine() -> None:
+def test_dockerfile_bundles_default_alphasift_adapter() -> None:
     dockerfile = (REPO_ROOT / "docker" / "Dockerfile").read_text(encoding="utf-8")
     requirements = (REPO_ROOT / "requirements.txt").read_text(encoding="utf-8")
 
-    assert "screening.git" not in requirements.lower()
+    assert "git \\" in dockerfile
+    assert f"{DEFAULT_ALPHASIFT_INSTALL_SPEC}#egg=alphasift" in requirements
     assert "pip install -r requirements.txt" in dockerfile
     assert "--mount=type=cache,target=/root/.cache/pip" in dockerfile
-    assert "import src.services.screening.pipeline" in dockerfile
+    assert "import alphasift.dsa_adapter" in dockerfile
 
 
 def test_docker_entrypoint_repairs_ownership_and_user_permissions() -> None:

@@ -15,8 +15,6 @@ type UseDashboardLifecycleOptions = {
   syncTaskUpdated: (task: TaskInfo) => void;
   syncTaskFailed: (task: TaskInfo) => void;
   removeTask: (taskId: string) => void;
-  onDashboardDataRefresh?: () => void;
-  onCompletedTaskDataRefreshed?: (task: TaskInfo) => void;
   enabled?: boolean;
 };
 
@@ -33,8 +31,6 @@ export function useDashboardLifecycle({
   syncTaskUpdated,
   syncTaskFailed,
   removeTask,
-  onDashboardDataRefresh,
-  onCompletedTaskDataRefreshed,
   enabled = true,
 }: UseDashboardLifecycleOptions): void {
   const removalTimeoutsRef = useRef<number[]>([]);
@@ -60,11 +56,10 @@ export function useDashboardLifecycle({
       void refreshStockBar();
       void refreshMarketReviewHistory?.(true);
       void refreshActiveTasks();
-      onDashboardDataRefresh?.();
     }, 30_000);
 
     return () => window.clearInterval(intervalId);
-  }, [enabled, onDashboardDataRefresh, refreshHistory, refreshMarketReviewHistory, refreshStockBar, refreshActiveTasks]);
+  }, [enabled, refreshHistory, refreshMarketReviewHistory, refreshStockBar, refreshActiveTasks]);
 
   useEffect(() => {
     if (!enabled) {
@@ -77,13 +72,12 @@ export function useDashboardLifecycle({
         void refreshStockBar();
         void refreshMarketReviewHistory?.(true);
         void refreshActiveTasks();
-        onDashboardDataRefresh?.();
       }
     };
 
     document.addEventListener('visibilitychange', handleVisibilityChange);
     return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
-  }, [enabled, onDashboardDataRefresh, refreshHistory, refreshMarketReviewHistory, refreshStockBar, refreshActiveTasks]);
+  }, [enabled, refreshHistory, refreshMarketReviewHistory, refreshStockBar, refreshActiveTasks]);
 
   useEffect(() => {
     return () => {
@@ -110,13 +104,12 @@ export function useDashboardLifecycle({
     },
     onTaskCompleted: (task) => {
       syncTaskUpdated(task);
-      const historyRefresh = refreshHistoryForCompletedTask
-        ? refreshHistoryForCompletedTask(task)
-        : refreshHistory(true);
-      const stockBarRefresh = refreshStockBar();
-      void Promise.allSettled([historyRefresh, stockBarRefresh]).then(() => {
-        onCompletedTaskDataRefreshed?.(task);
-      });
+      if (refreshHistoryForCompletedTask) {
+        void refreshHistoryForCompletedTask(task);
+      } else {
+        void refreshHistory(true);
+      }
+      void refreshStockBar();
       void refreshMarketReviewHistory?.(true);
       scheduleTaskRemoval(task.taskId, 2_000);
     },

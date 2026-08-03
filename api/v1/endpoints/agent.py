@@ -6,7 +6,6 @@ Agent API endpoints.
 import asyncio
 import json
 import logging
-import threading
 import uuid
 from typing import Any, Dict, List, Optional
 
@@ -14,7 +13,6 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
-from api.v1.schemas.system_config import AgentBackendStatusResponse
 from src.config import get_config
 from src.services.agent_model_service import list_agent_model_deployments
 
@@ -42,15 +40,11 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-_ACTIVE_CODEX_STREAMS: Dict[str, threading.Event] = {}
-_ACTIVE_CODEX_STREAMS_LOCK = threading.Lock()
-
 class ChatRequest(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     message: str
     session_id: Optional[str] = None
-    request_id: Optional[str] = Field(default=None, min_length=1, max_length=64)
     skills: Optional[List[str]] = Field(
         default=None,
         validation_alias=AliasChoices("skills", "strategies"),
@@ -62,24 +56,11 @@ class ChatRequest(BaseModel):
         """Return skill ids from the unified request shape."""
         return self.skills
 
-
-def _build_agent_chat_context(request: ChatRequest, config, skills: Optional[List[str]]) -> Dict[str, Any]:
-    """Build the shared context contract for regular and streaming Agent Chat."""
-    context = dict(request.context or {})
-    if skills is not None:
-        context["skills"] = skills
-    report_language = context.get("report_language")
-    if report_language is None or (isinstance(report_language, str) and not report_language.strip()):
-        context["report_language"] = config.report_language
-    return context
-
-
 class ChatResponse(BaseModel):
     success: bool
     content: str
     session_id: str
     error: Optional[str] = None
-
 
 class SkillInfo(BaseModel):
     id: str
@@ -115,34 +96,8 @@ class AgentModelsResponse(BaseModel):
 async def get_agent_models():
     """Get configured Agent model deployments for frontend selection."""
     config = get_config()
-    from src.agent.agent_backend import AgentBackendConfigError, resolve_agent_backend_id
-
-    try:
-        selected_backend = resolve_agent_backend_id(config)
-    except AgentBackendConfigError:
-        return AgentModelsResponse(models=[])
-    if selected_backend == "codex_app_server":
-        return AgentModelsResponse(models=[])
     return AgentModelsResponse(
         models=[AgentModelDeployment(**item) for item in list_agent_model_deployments(config)]
-    )
-
-
-@router.get("/status", response_model=AgentBackendStatusResponse)
-async def get_agent_status():
-    """Return the current effective Chat backend status for the Chat page."""
-    payload = await asyncio.to_thread(_get_agent_chat_status, get_config())
-    return _agent_status_response(payload)
-
-
-def _agent_status_response(payload: Dict[str, Any]) -> AgentBackendStatusResponse:
-    return AgentBackendStatusResponse(
-        backend=payload["backend"],
-        available=payload["available"],
-        experimental=payload["experimental"],
-        version=payload.get("version"),
-        error_code=payload.get("error_code"),
-        message=payload.get("message"),
     )
 
 
@@ -193,30 +148,25 @@ async def get_strategies():
 @router.post("/chat", response_model=ChatResponse)
 async def agent_chat(request: ChatRequest):
     """
-    Chat with the AI Agent without progress events.
-
-    Codex Agent callers must use ``/chat/stream``, which provides progress
-    events and request cancellation. The default LiteLLM Agent keeps this
-    endpoint's existing behavior.
+    Chat with the AI Agent.
     """
     config = get_config()
-    backend_id = _select_agent_chat_backend(config)
-    if backend_id == "codex_app_server":
-        raise HTTPException(
-            status_code=400,
-            detail={
-                "error": "capability_unsupported",
-                "message": "Codex Agent requires the Chat interface with progress and stop support",
-            },
-        )
     
+    if not config.is_agent_available():
+        raise HTTPException(status_code=400, detail="Agent mode is not enabled")
+        
     session_id = request.session_id or str(uuid.uuid4())
     
     try:
         skills = request.effective_skills
         executor = _build_executor(config, skills or None)
 
-        ctx = _build_agent_chat_context(request, config, skills)
+        # Pass explicit skills into context for the orchestrator.
+        # Direct assignment so caller-provided skills always take precedence
+        # over any stale value carried in the context dict.
+        ctx = dict(request.context or {})
+        if skills is not None:
+            ctx["skills"] = skills
 
         # Offload the blocking call to a thread to avoid blocking the event loop.
         loop = asyncio.get_running_loop()
@@ -230,7 +180,7 @@ async def agent_chat(request: ChatRequest):
             success=result.success,
             content=result.content,
             session_id=session_id,
-            error=result.error,
+            error=result.error
         )
             
     except Exception as e:
@@ -321,32 +271,9 @@ async def send_chat_to_notification(request: SendChatRequest):
 
 
 def _build_executor(config, skills: Optional[List[str]] = None):
-    """Build and return the backend-neutral Chat executor (sync helper)."""
-    from src.agent.factory import build_agent_chat_executor
-
-    return build_agent_chat_executor(config, skills=skills)
-
-
-def _get_agent_chat_status(config) -> Dict[str, Any]:
-    from src.services.agent_backend_status_service import AgentBackendStatusService
-
-    return AgentBackendStatusService(config=config).get_status()
-
-
-def _select_agent_chat_backend(config) -> str:
-    """Select the runtime backend without repeating the compatibility probe."""
-    from src.services.agent_backend_status_service import evaluate_agent_backend_config
-
-    evaluation = evaluate_agent_backend_config(config)
-    if not evaluation["available"]:
-        raise HTTPException(
-            status_code=400,
-            detail={
-                "error": evaluation["error_code"],
-                "message": evaluation["message"],
-            },
-        )
-    return evaluation["backend"]
+    """Build and return a configured AgentExecutor (sync helper)."""
+    from src.agent.factory import build_agent_executor
+    return build_agent_executor(config, skills=skills)
 
 
 async def _run_research_in_background(
@@ -461,141 +388,70 @@ async def agent_chat_stream(request: ChatRequest):
       - error: error occurred, contains 'message'
     """
     config = get_config()
-    backend_id = _select_agent_chat_backend(config)
+    if not config.is_agent_available():
+        raise HTTPException(status_code=400, detail="Agent mode is not enabled")
 
     session_id = request.session_id or str(uuid.uuid4())
     loop = asyncio.get_running_loop()
     queue: asyncio.Queue = asyncio.Queue()
-    cancel_event = threading.Event()
-    request_id = request.request_id or str(uuid.uuid4())
-    if backend_id == "codex_app_server":
-        with _ACTIVE_CODEX_STREAMS_LOCK:
-            if request_id in _ACTIVE_CODEX_STREAMS:
-                raise HTTPException(
-                    status_code=409,
-                    detail={
-                        "error": "request_conflict",
-                        "message": "This Agent request is already running",
-                    },
-                )
-            _ACTIVE_CODEX_STREAMS[request_id] = cancel_event
 
+    # Pass explicit skills into context for the orchestrator.
+    # Direct assignment so caller-provided skills always take precedence.
     skills = request.effective_skills
-    stream_ctx = _build_agent_chat_context(request, config, skills)
+    stream_ctx = dict(request.context or {})
+    if skills is not None:
+        stream_ctx["skills"] = skills
 
     def progress_callback(event: dict):
-        if backend_id == "codex_app_server" and cancel_event.is_set():
-            return
         # Enrich tool events with display names
         if event.get("type") in ("tool_start", "tool_done"):
             tool = event.get("tool", "")
             event["display_name"] = TOOL_DISPLAY_NAMES.get(tool, tool)
         asyncio.run_coroutine_threadsafe(queue.put(event), loop)
 
-    def run_sync(executor, turn):
+    def run_sync():
         try:
-            execute_kwargs = {
-                "progress_callback": progress_callback,
-            }
-            if backend_id == "codex_app_server":
-                execute_kwargs["cancel_event"] = cancel_event
-            result = executor.execute_turn(
-                turn,
-                **execute_kwargs,
+            executor = _build_executor(config, skills or None)
+            result = executor.chat(
+                message=request.message,
+                session_id=session_id,
+                progress_callback=progress_callback,
+                context=stream_ctx,
             )
-            event = {
-                "type": "done",
-                "success": result.success,
-                "content": result.content,
-                "error": result.error,
-                "total_steps": result.total_steps,
-                "session_id": session_id,
-            }
-            event.update({
-                "backend": getattr(result, "backend", "") or backend_id,
-                "error_code": getattr(result, "error_code", None),
-                "request_id": request_id,
-            })
-            asyncio.run_coroutine_threadsafe(queue.put(event), loop)
+            asyncio.run_coroutine_threadsafe(
+                queue.put({
+                    "type": "done",
+                    "success": result.success,
+                    "content": result.content,
+                    "error": result.error,
+                    "total_steps": result.total_steps,
+                    "session_id": session_id,
+                }),
+                loop,
+            )
         except Exception as exc:
-            logger.error("Agent stream error: %s", exc)
-            event = {
-                "type": "error",
-                "message": "Agent Chat failed" if backend_id == "codex_app_server" else str(exc),
-                "error_code": getattr(exc, "code", "unknown_backend_error"),
-                "backend": backend_id,
-                "request_id": request_id,
-            }
-            asyncio.run_coroutine_threadsafe(queue.put(event), loop)
+            logger.error(f"Agent stream error: {exc}")
+            asyncio.run_coroutine_threadsafe(
+                queue.put({"type": "error", "message": str(exc)}),
+                loop,
+            )
 
     async def event_generator():
-        fut = None
+        # Start executor in a thread so we don't block the event loop
+        fut = loop.run_in_executor(None, run_sync)
         try:
-            try:
-                executor = await asyncio.to_thread(_build_executor, config, skills or None)
-                turn = await asyncio.to_thread(
-                    executor.prepare_turn,
-                    message=request.message,
-                    session_id=session_id,
-                    context=stream_ctx,
-                )
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                logger.error("Agent request preparation failed: %s", exc, exc_info=True)
-                event = {
-                    "type": "error",
-                    "message": "Agent request was not accepted",
-                    "error_code": "request_not_accepted",
-                    "backend": backend_id,
-                    "request_id": request_id,
-                }
-                yield "data: " + json.dumps(event, ensure_ascii=False) + "\n\n"
-                return
-
-            accepted_event = {
-                "type": "accepted",
-                "backend": backend_id,
-                "request_id": request_id,
-                "session_id": session_id,
-            }
-            yield "data: " + json.dumps(accepted_event, ensure_ascii=False) + "\n\n"
-
-            # Backend execution starts only after the accepted event has been
-            # yielded, so Web state and server persistence share one commit point.
-            fut = loop.run_in_executor(None, run_sync, executor, turn)
             while True:
                 try:
-                    if backend_id == "codex_app_server":
-                        # Codex owns one authoritative backend deadline.  A
-                        # second API timeout would race it and could emit a
-                        # terminal event before process cleanup finishes.
-                        event = await queue.get()
-                    else:
-                        event = await asyncio.wait_for(queue.get(), timeout=300.0)
+                    event = await asyncio.wait_for(queue.get(), timeout=300.0)
                 except asyncio.TimeoutError:
-                    event = {"type": "error", "message": "分析超时"}
-                    yield "data: " + json.dumps(event, ensure_ascii=False) + "\n\n"
+                    yield "data: " + json.dumps({"type": "error", "message": "分析超时"}, ensure_ascii=False) + "\n\n"
                     break
                 yield "data: " + json.dumps(event, ensure_ascii=False) + "\n\n"
                 if event.get("type") in ("done", "error"):
                     break
         finally:
-            if backend_id == "codex_app_server" and (fut is None or not fut.done()):
-                cancel_event.set()
             try:
-                if backend_id == "codex_app_server" and fut is not None:
-                    while not fut.done():
-                        try:
-                            await asyncio.shield(fut)
-                        except asyncio.CancelledError:
-                            # Client disconnect cancellation must not abandon the
-                            # owned Codex/tool worker before it actually exits.
-                            cancel_event.set()
-                    if not fut.cancelled():
-                        fut.result()
-                elif fut is not None:
-                    await asyncio.wait_for(fut, timeout=5.0)
+                await asyncio.wait_for(fut, timeout=5.0)
             except asyncio.CancelledError:
                 pass
             except asyncio.TimeoutError:
@@ -603,11 +459,6 @@ async def agent_chat_stream(request: ChatRequest):
                 logger.debug("agent executor cleanup timed out after 5s for session %s", session_id)
             except Exception as exc:
                 logger.warning("agent executor cleanup error (ignored): %s", exc, exc_info=True)
-            finally:
-                if backend_id == "codex_app_server":
-                    with _ACTIVE_CODEX_STREAMS_LOCK:
-                        if _ACTIVE_CODEX_STREAMS.get(request_id) is cancel_event:
-                            _ACTIVE_CODEX_STREAMS.pop(request_id, None)
 
     return StreamingResponse(
         event_generator(),
@@ -618,20 +469,3 @@ async def agent_chat_stream(request: ChatRequest):
             "Connection": "keep-alive",
         },
     )
-
-
-@router.post("/chat/stream/{request_id}/cancel")
-async def cancel_agent_chat_stream(request_id: str):
-    """Signal cancellation while the original Codex SSE remains open."""
-    with _ACTIVE_CODEX_STREAMS_LOCK:
-        cancel_event = _ACTIVE_CODEX_STREAMS.get(request_id)
-    if cancel_event is None:
-        raise HTTPException(
-            status_code=404,
-            detail={
-                "error": "request_not_active",
-                "message": "This Agent request is no longer running",
-            },
-        )
-    cancel_event.set()
-    return {"accepted": True, "request_id": request_id}

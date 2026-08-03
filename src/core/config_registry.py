@@ -13,6 +13,7 @@ from typing import Any, Dict, List, Optional
 from src.config import (
     AGENT_CONTEXT_COMPRESSION_PROFILES,
     AGENT_MAX_STEPS_DEFAULT,
+    DEFAULT_ALPHASIFT_INSTALL_SPEC,
 )
 from src.notification_noise import NOTIFICATION_SEVERITIES
 from src.notification_routing import ROUTABLE_NOTIFICATION_CHANNELS
@@ -72,6 +73,8 @@ _CATEGORY_DEFINITIONS: List[Dict[str, Any]] = [
 
 WEB_SETTINGS_HIDDEN_FROM_UI = {
     "DATABASE_PATH",
+    "DINGTALK_WEBHOOK_URL",
+    "DINGTALK_SECRET",
     "SQLITE_WAL_ENABLED",
     "SQLITE_BUSY_TIMEOUT_MS",
     "SQLITE_WRITE_RETRY_MAX",
@@ -874,10 +877,10 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         ],
         "warning_codes": [],
     },
-    "SCREENING_ENABLED": {
-        "title": "Built-in Stock Screening",
-        "description": "Enable DSA's built-in stock screening tab. The implementation is based on AlphaSift and maintained as part of DSA. Disabled by default.",
-        "category": "base",
+    "ALPHASIFT_ENABLED": {
+        "title": "AlphaSift Screening",
+        "description": "Enable the built-in AlphaSift stock screening tab. Disabled by default. This switch only affects the AlphaSift screening path; it does not migrate, sanitize, or clear existing LLM/runtime fields in `.env`.",
+        "category": "data_source",
         "data_type": "boolean",
         "ui_control": "switch",
         "is_sensitive": False,
@@ -887,10 +890,10 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "options": [],
         "validation": {},
         "display_order": 17,
-        "help_key": "settings.base.SCREENING_ENABLED",
+        "help_key": "settings.data_source.ALPHASIFT_ENABLED",
         "examples": [
-            "SCREENING_ENABLED=false",
-            "SCREENING_ENABLED=true",
+            "ALPHASIFT_ENABLED=false",
+            "ALPHASIFT_ENABLED=true",
         ],
         "docs": [
             {
@@ -906,8 +909,36 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
                 "href": "https://platform.openai.com/docs/api-reference/authentication",
             },
             {
-                "label": "选股说明",
-                "href": "https://github.com/ZhuLinsen/daily_stock_analysis/blob/main/docs/screening-engine.md",
+                "label": "AlphaSift 集成说明",
+                "href": "https://github.com/ZhuLinsen/daily_stock_analysis/blob/main/docs/alphasift-integration.md",
+            },
+        ],
+    },
+    "ALPHASIFT_INSTALL_SPEC": {
+        "title": "AlphaSift Install Spec",
+        "description": "Pinned AlphaSift pip source used for explicit repair installs and source verification. It is not used for normal runtime calls after startup dependency installation; runtime compatibility is built from DSA's resolved LLM/runtime context.",
+        "category": "data_source",
+        "data_type": "string",
+        "ui_control": "password",
+        "is_sensitive": True,
+        "is_required": False,
+        "is_editable": True,
+        "default_value": DEFAULT_ALPHASIFT_INSTALL_SPEC,
+        "options": [],
+        "validation": {},
+        "display_order": 18,
+        "help_key": "settings.data_source.ALPHASIFT_INSTALL_SPEC",
+        "examples": [
+            f"ALPHASIFT_INSTALL_SPEC={DEFAULT_ALPHASIFT_INSTALL_SPEC}",
+        ],
+        "docs": [
+            {
+                "label": "requirements.txt（版本与依赖边界）",
+                "href": "https://github.com/ZhuLinsen/daily_stock_analysis/blob/main/requirements.txt",
+            },
+            {
+                "label": "AlphaSift 集成说明",
+                "href": "https://github.com/ZhuLinsen/daily_stock_analysis/blob/main/docs/alphasift-integration.md",
             },
         ],
     },
@@ -1643,59 +1674,6 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
             },
         ],
         "warning_codes": ["not_webhook_delivery", "restart_required"],
-    },
-    "DINGTALK_WEBHOOK_URL": {
-        "title": "DingTalk Bot Webhook",
-        "description": "DingTalk group robot webhook URL. This is separate from App/Stream mode.",
-        "category": "notification",
-        "data_type": "string",
-        "ui_control": "password",
-        "is_sensitive": True,
-        "is_required": False,
-        "is_editable": True,
-        "default_value": None,
-        "options": [],
-        "validation": {
-            "item_type": "url",
-            "allowed_schemes": ["http", "https"],
-        },
-        "display_order": 18,
-        "help_key": "settings.notification.DINGTALK_WEBHOOK_URL",
-        "examples": [
-            "DINGTALK_WEBHOOK_URL=https://oapi.dingtalk.com/robot/send?access_token=your_token",
-        ],
-        "docs": [
-            {
-                "label": "完整指南：通知渠道配置",
-                "href": "https://github.com/ZhuLinsen/daily_stock_analysis/blob/main/docs/full-guide.md#通知渠道详细配置",
-            },
-        ],
-        "warning_codes": ["webhook_secret_value"],
-    },
-    "DINGTALK_SECRET": {
-        "title": "DingTalk Signing Secret",
-        "description": "Signing secret for a DingTalk group robot. Leave empty when signing is disabled.",
-        "category": "notification",
-        "data_type": "string",
-        "ui_control": "password",
-        "is_sensitive": True,
-        "is_required": False,
-        "is_editable": True,
-        "default_value": None,
-        "options": [],
-        "validation": {},
-        "display_order": 19,
-        "help_key": "settings.notification.DINGTALK_SECRET",
-        "examples": [
-            "DINGTALK_SECRET=your_dingtalk_signing_secret",
-        ],
-        "docs": [
-            {
-                "label": "完整指南：通知渠道配置",
-                "href": "https://github.com/ZhuLinsen/daily_stock_analysis/blob/main/docs/full-guide.md#通知渠道详细配置",
-            },
-        ],
-        "warning_codes": ["secret_value"],
     },
     "PUSHPLUS_TOKEN": {
         "title": "PushPlus Token",
@@ -2549,7 +2527,7 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
     },
     "REPORT_LANGUAGE": {
         "title": "Report Language",
-        "description": "Default output language for reports, Agent Chat fallback replies, and notification templates. Supported values: zh, en, ko.",
+        "description": "Default output language for reports and notification templates. Supported values: zh, en.",
         "category": "notification",
         "data_type": "string",
         "ui_control": "select",
@@ -2568,7 +2546,6 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "examples": [
             "REPORT_LANGUAGE=zh",
             "REPORT_LANGUAGE=en",
-            "REPORT_LANGUAGE=ko",
         ],
         "docs": [
             {
@@ -3760,37 +3737,6 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         ],
         "warning_codes": [],
     },
-    "AGENT_BACKEND": {
-        "title": "Ask-Stock Backend",
-        "description": "Choose how the ask-stock Chat runs. Auto keeps the current default-model route and never selects experimental Codex automatically.",
-        "category": "agent",
-        "data_type": "string",
-        "ui_control": "select",
-        "is_sensitive": False,
-        "is_required": False,
-        "is_editable": True,
-        "default_value": "auto",
-        "options": [
-            {"label": "Auto (recommended)", "value": "auto"},
-            {"label": "Default model settings", "value": "litellm"},
-            {"label": "Codex local Agent (experimental)", "value": "codex_app_server"},
-        ],
-        "validation": {"enum": ["auto", "litellm", "codex_app_server"]},
-        "display_order": 2,
-        "help_key": "settings.agent.AGENT_BACKEND",
-        "examples": [
-            "AGENT_BACKEND=auto",
-            "AGENT_BACKEND=litellm",
-            "AGENT_BACKEND=codex_app_server",
-        ],
-        "docs": [
-            {
-                "label": "LLM 配置指南",
-                "href": "https://github.com/ZhuLinsen/daily_stock_analysis/blob/main/docs/LLM_CONFIG_GUIDE.md",
-            },
-        ],
-        "warning_codes": [],
-    },
     "AGENT_GENERATION_BACKEND": {
         "title": "Ask-Stock Generation Method",
         "description": "Generation method used by the ask-stock assistant to generate replies and use tools.",
@@ -3806,7 +3752,7 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
             {"label": "Default model settings", "value": "litellm"},
         ],
         "validation": {"enum": ["auto", "litellm"]},
-        "display_order": 3,
+        "display_order": 2,
         "help_key": "settings.agent.AGENT_GENERATION_BACKEND",
         "examples": [
             "AGENT_GENERATION_BACKEND=auto",
@@ -3822,7 +3768,7 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
     },
     "AGENT_MAX_STEPS": {
         "title": "Agent Max Steps",
-        "description": f"Maximum reasoning-step limit for the default-model Agent and per-turn tool-call limit for Codex. At the default ({AGENT_MAX_STEPS_DEFAULT}), each default-model sub-agent keeps its own preset. When raised above {AGENT_MAX_STEPS_DEFAULT}, all sub-agents adopt this value. When lowered below a sub-agent's preset, that sub-agent is capped at this value.",
+        "description": f"Maximum reasoning-step limit for Agent mode. At the default ({AGENT_MAX_STEPS_DEFAULT}), each sub-agent keeps its own preset. When raised above {AGENT_MAX_STEPS_DEFAULT}, all sub-agents adopt this value. When lowered below a sub-agent's preset, that sub-agent is capped at this value.",
         "category": "agent",
         "data_type": "integer",
         "ui_control": "number",
@@ -3987,7 +3933,7 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
     },
     "AGENT_ORCHESTRATOR_TIMEOUT_S": {
         "title": "Agent Timeout",
-        "description": "Shared timeout budget in seconds for Agent execution. Single-agent runs use it as the overall ReAct loop budget; multi-agent mode uses it as the cooperative pipeline budget. Set to 0 to disable only for the default LiteLLM path; Codex requires a positive value so every request ends within a known time.",
+        "description": "Shared timeout budget in seconds for Agent execution. Single-agent runs use it as the overall ReAct loop budget; multi-agent mode uses it as the cooperative pipeline budget. Set to 0 to disable.",
         "category": "agent",
         "data_type": "integer",
         "ui_control": "number",
@@ -4028,32 +3974,6 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "examples": [
             "AGENT_RISK_OVERRIDE=true",
             "AGENT_RISK_OVERRIDE=false",
-        ],
-        "docs": [
-            {
-                "label": "完整指南：Agent 配置",
-                "href": "https://github.com/ZhuLinsen/daily_stock_analysis/blob/main/docs/full-guide.md#环境变量完整列表",
-            },
-        ],
-        "warning_codes": [],
-    },
-    "AGENT_SKILL_CONCURRENCY": {
-        "title": "Strategy Skill Concurrency",
-        "description": "Maximum number of specialist strategy-skill agents to run concurrently in specialist mode.",
-        "category": "agent",
-        "data_type": "integer",
-        "ui_control": "number",
-        "is_sensitive": False,
-        "is_required": False,
-        "is_editable": True,
-        "default_value": "3",
-        "options": [],
-        "validation": {"min": 1, "max": 4},
-        "display_order": 64,
-        "help_key": "settings.agent.AGENT_SKILL_CONCURRENCY",
-        "examples": [
-            "AGENT_SKILL_CONCURRENCY=3",
-            "AGENT_SKILL_CONCURRENCY=4",
         ],
         "docs": [
             {
@@ -4143,7 +4063,7 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
     },
     "AGENT_SKILL_AUTOWEIGHT": {
         "title": "Auto-Weight Strategies",
-        "description": "Conservatively weight strategy-skill opinions from sufficient attributable Outcome samples.",
+        "description": "Automatically weight strategy-skill opinions by their historical backtest performance.",
         "category": "agent",
         "data_type": "boolean",
         "ui_control": "switch",

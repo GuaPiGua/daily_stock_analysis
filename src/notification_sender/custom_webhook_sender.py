@@ -14,11 +14,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import requests
 
 from src.config import Config
-from src.formatters import (
-    chunk_content_by_max_bytes,
-    slice_at_max_bytes,
-    strip_hidden_markdown_metadata,
-)
+from src.formatters import chunk_content_by_max_bytes, slice_at_max_bytes
 
 
 logger = logging.getLogger(__name__)
@@ -276,8 +272,7 @@ class CustomWebhookSender:
         
         自动识别常见服务并使用对应格式
         """
-        sanitized_content = strip_hidden_markdown_metadata(content).strip()
-        templated_payload = self._build_custom_webhook_template_payload(sanitized_content)
+        templated_payload = self._build_custom_webhook_template_payload(content)
         if templated_payload is not None:
             return templated_payload
 
@@ -289,18 +284,14 @@ class CustomWebhookSender:
                 "msgtype": "markdown",
                 "markdown": {
                     "title": "股票分析报告",
-                    "text": sanitized_content
+                    "text": content
                 }
             }
         
         # Discord Webhook
         if 'discord.com/api/webhooks' in url_lower or 'discordapp.com/api/webhooks' in url_lower:
             # Discord 限制 2000 字符
-            truncated = (
-                sanitized_content[:1900] + "..."
-                if len(sanitized_content) > 1900
-                else sanitized_content
-            )
+            truncated = content[:1900] + "..." if len(content) > 1900 else content
             return {
                 "content": truncated
             }
@@ -308,7 +299,7 @@ class CustomWebhookSender:
         # Slack Incoming Webhook
         if 'hooks.slack.com' in url_lower:
             return {
-                "text": sanitized_content,
+                "text": content,
                 "mrkdwn": True
             }
         
@@ -316,21 +307,20 @@ class CustomWebhookSender:
         if 'api.day.app' in url_lower:
             return {
                 "title": "股票分析报告",
-                "body": sanitized_content[:4000],  # Bark 限制
+                "body": content[:4000],  # Bark 限制
                 "group": "stock"
             }
         
         # 通用格式（兼容大多数服务）
         return {
-            "text": sanitized_content,
-            "content": sanitized_content,
-            "message": sanitized_content,
-            "body": sanitized_content
+            "text": content,
+            "content": content,
+            "message": content,
+            "body": content
         }
 
     def _build_custom_webhook_template_payload(self, content: str) -> Optional[dict]:
         """Build payload from CUSTOM_WEBHOOK_BODY_TEMPLATE when configured."""
-        content = strip_hidden_markdown_metadata(content).strip()
         template = (self._custom_webhook_body_template or "").strip()
         if not template:
             return None
@@ -360,7 +350,6 @@ class CustomWebhookSender:
     
     def _send_dingtalk_chunked(self, url: str, content: str, max_bytes: int = 20000) -> bool:
         import time as _time
-        content = strip_hidden_markdown_metadata(content).strip()
 
         # 为 payload 开销预留空间，避免 body 超限
         budget = max(1000, max_bytes - 1500)

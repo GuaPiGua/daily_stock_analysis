@@ -14,35 +14,9 @@ from datetime import date
 from threading import Lock
 from typing import Any, Dict, List, Optional, Tuple
 
-from src.agent.tools.execution import check_tool_execution
-from src.agent.tools.registry import ToolParameter, ToolDefinition, ToolPolicy
+from src.agent.tools.registry import ToolParameter, ToolDefinition
 
 logger = logging.getLogger(__name__)
-
-_MARKET_DATA_STOCK_POLICY = ToolPolicy.declared(
-    read_only=True,
-    side_effects=["network_read"],
-    permissions=["market_data:read"],
-    scope_dimensions=["stock"],
-)
-_MARKET_DATA_CACHE_POLICY = ToolPolicy.declared(
-    read_only=True,
-    side_effects=["network_read", "db_read", "db_write_cache"],
-    permissions=["market_data:read"],
-    scope_dimensions=["stock"],
-)
-_ANALYSIS_CONTEXT_POLICY = ToolPolicy.declared(
-    read_only=True,
-    side_effects=["db_read"],
-    permissions=["analysis_context:read"],
-    scope_dimensions=["stock"],
-    cancellation_safe=True,
-)
-_PORTFOLIO_READ_POLICY = ToolPolicy.declared(
-    read_only=True,
-    side_effects=["db_read"],
-    permissions=["portfolio:read"],
-)
 
 _fetcher_manager_singleton = None
 _fetcher_manager_lock = Lock()
@@ -306,7 +280,6 @@ get_realtime_quote_tool = ToolDefinition(
     ],
     handler=_handle_get_realtime_quote,
     category="data",
-    policy=_MARKET_DATA_STOCK_POLICY,
 )
 
 
@@ -388,7 +361,6 @@ get_daily_history_tool = ToolDefinition(
     ],
     handler=_handle_get_daily_history,
     category="data",
-    policy=_MARKET_DATA_CACHE_POLICY,
 )
 
 
@@ -433,7 +405,6 @@ get_chip_distribution_tool = ToolDefinition(
     ],
     handler=_handle_get_chip_distribution,
     category="data",
-    policy=_MARKET_DATA_STOCK_POLICY,
 )
 
 
@@ -443,10 +414,8 @@ get_chip_distribution_tool = ToolDefinition(
 
 def _handle_get_analysis_context(stock_code: str) -> dict:
     """Get stored analysis context from database."""
-    check_tool_execution()
     db = _get_db()
     context = db.get_analysis_context(stock_code)
-    check_tool_execution()
 
     if context is None:
         return {"error": f"No analysis context in DB for {stock_code}"}
@@ -454,7 +423,6 @@ def _handle_get_analysis_context(stock_code: str) -> dict:
     # Return safely serializable version (remove raw_data to save tokens)
     safe_context = {}
     for k, v in context.items():
-        check_tool_execution()
         if k == "raw_data":
             safe_context["has_raw_data"] = True
             safe_context["raw_data_count"] = len(v) if isinstance(v, list) else 0
@@ -478,7 +446,6 @@ get_analysis_context_tool = ToolDefinition(
     ],
     handler=_handle_get_analysis_context,
     category="data",
-    policy=_ANALYSIS_CONTEXT_POLICY,
 )
 
 
@@ -531,12 +498,11 @@ get_stock_info_tool = ToolDefinition(
         ToolParameter(
             name="stock_code",
             type="string",
-            description="Stock code: A-share '600519', US 'AAPL', HK '00700'",
+            description="A-share stock code, e.g., '600519'",
         ),
     ],
     handler=_handle_get_stock_info,
     category="data",
-    policy=_MARKET_DATA_STOCK_POLICY,
 )
 
 
@@ -644,7 +610,6 @@ get_portfolio_snapshot_tool = ToolDefinition(
     ],
     handler=_handle_get_portfolio_snapshot,
     category="data",
-    policy=_PORTFOLIO_READ_POLICY,
 )
 
 
@@ -723,7 +688,6 @@ get_capital_flow_tool = ToolDefinition(
     ],
     handler=_handle_get_capital_flow,
     category="data",
-    policy=_MARKET_DATA_STOCK_POLICY,
 )
 
 
